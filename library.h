@@ -1,6 +1,0 @@
-#ifndef SLIPSTREAM_LIBRARY_H
-#define SLIPSTREAM_LIBRARY_H
-
-void hello();
-
-#endif // SLIPSTREAM_LIBRARY_H
