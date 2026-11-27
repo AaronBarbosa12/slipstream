@@ -25,9 +25,23 @@ TEST(CsvReaderTest, TestparsePriceString) {
     EXPECT_THROW(parsePriceString("crab  "), std::invalid_argument);
     EXPECT_THROW(parsePriceString("3_"), std::invalid_argument);
 
-    // The first whole price that exceeds int64_t after scaling by 10,000.
-    //constexpr auto overflowingPrice = std::numeric_limits<std::int64_t>::max() / 10'000 + 1;
-    //EXPECT_THROW(parsePriceString(std::to_string(overflowingPrice)), std::invalid_argument);
+
+    // Check for overflow
+    // Previous approach - WRONG
+    // constexpr long double overflowingPrice = std::numeric_limits<double>::max() + 1;
+    // EXPECT_THROW(parsePriceString(std::to_string(overflowingPrice)), std::invalid_argument);
+    // Adding epsilon() to the largest double rounded back to that same value:
+    // epsilon() is the spacing near 1.0, and the spacing near max() is much larger.
+
+    // Check if the input string is too large of a floating point value
+    const auto overflowingExponent = std::numeric_limits<double>::max_exponent10 + 1;
+    EXPECT_THROW(parsePriceString("1e" + std::to_string(overflowingExponent)), std::invalid_argument);
+
+    // What if the input string fits into double, but price x 10'000 doesn't fit into int64_t?
+    constexpr double maxPrice = std::numeric_limits<std::int64_t>::max();
+    constexpr double firstOverflowingWholePrice = maxPrice / 10'000 + 1;
+
+    EXPECT_THROW(parsePriceString(std::to_string(firstOverflowingWholePrice)), std::invalid_argument);
 }
 
 TEST(CsvReaderTest, TestQuantityString) {

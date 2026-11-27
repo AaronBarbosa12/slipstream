@@ -1,5 +1,6 @@
 #include "csv_reader.h"
 
+#include <cmath>
 #include <limits>
 #include <cstdint>
 #include <fstream>
@@ -13,6 +14,7 @@
 constexpr int NUM_LINES_CSV_HEADER = 21; // Lines to be skipped
 constexpr uint64_t PRICE_MULTIPLIER = 10000;
 constexpr auto CSV_PATH = SLIPSTREAM_CSV_PATH;
+constexpr double INT64_UPPER_BOUND = 0x1p63;  // Exactly 2^63, the exclusive upper bound.
 
 CsvFieldCursor::CsvFieldCursor(std::string_view CSVString): csvString(CSVString) {
     startPosition = 0;
@@ -49,7 +51,14 @@ int64_t parsePriceString(std::string_view priceString) {
     double price;
     ss >> price;
     validateParsedField(ss, "Invalid price input");
-    return static_cast<int64_t>(PRICE_MULTIPLIER * price);
+
+    // Perform a separate validation to make sure the scaled value will fit in an int64_t
+    const double scaledValue = PRICE_MULTIPLIER * price;
+    if (!std::isfinite(scaledValue) || scaledValue < -INT64_UPPER_BOUND || scaledValue >= INT64_UPPER_BOUND) {
+        throw std::invalid_argument("Price exceeds int64_t range");
+    }
+
+    return static_cast<int64_t>(scaledValue);
 }
 
 uint32_t parseQuantityString(std::string_view quantityString) {
