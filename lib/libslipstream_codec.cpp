@@ -1,61 +1,46 @@
+#include "csv_reader.h"
+
+#include <limits>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <sstream>
-#include <limits>
 #include <chrono>
-#include <cstring>
+#include <charconv>
+#include <optional>
+#include <stdexcept>
 
 constexpr int NUM_LINES_CSV_HEADER = 21; // Lines to be skipped
-//constexpr int NUM_VALUES_PER_LINE = 10; //Timestamp,Type,Symbol,BidPrice,BidQty,AskPrice,AskQty,Price,Qty,Aggressor
 constexpr uint64_t PRICE_MULTIPLIER = 10000;
-const std::string CSV_PATH = "C:/Users/Aaron B/CLionProjects/slipstream/data/QandT.csv";
+constexpr auto CSV_PATH = SLIPSTREAM_CSV_PATH;
 
-struct Quote {
-    std::string symbol; // TODO: DO We need to make this into a char?
-    uint64_t ts_ns; // Nanoseconds since Unix epoch
-    uint32_t bid_qty;
-    int64_t bid_px; // Fixed point X 10,000
-    uint32_t ask_qty;
-    int64_t ask_px; // Fixed point X 10,000
-};
+CsvFieldCursor::CsvFieldCursor(std::string_view CSVString): csvString(CSVString) {
+    startPosition = 0;
+    endPosition = static_cast<int>(csvString.find(','));
+}
 
-struct Trade {
-    std::string symbol;  // TODO: DO We need to make this into a char?
-    uint64_t ts_ns; // Nanoseconds since Unix epoch
-    uint32_t qty;
-    int64_t px; // Fixed point X 10,000
-    std::string aggressor; // 'B', 'S', or '?' if unknown, TODO: DO We need to make this into a char? TODO: make into enum?
-    //int64_t id; TODO: ImplementTrade identifier
-};
+std::string_view CsvFieldCursor::next() {
+    std::string_view next = csvString.substr(startPosition, endPosition - startPosition);
+    startPosition = endPosition + 1;
+    endPosition = static_cast<int>(csvString.find(',', startPosition + 1));
+    return next;
+}
 
-class CSVStringIterator {
-    public:
-        CSVStringIterator(std::string_view CSVString): csvString(CSVString) {
-            startPosition = 0;
-            endPosition = static_cast<int>(csvString.find(','));
-        }
 
-        std::string_view next() {
-            std::string_view next = csvString.substr(startPosition, endPosition - startPosition);
-
-            // Update start and end positions
-            startPosition = endPosition + 1;
-            endPosition = static_cast<int>(csvString.find(',', startPosition + 1));
-            return next;
-        }
-
-    private:
-        std::string_view csvString;
-        int startPosition;
-        int endPosition;
-};
+void validateParsedField(std::istream& stream, const char* errorMessage) {
+    // We fail if the stringstreams fail bit is set OR
+    // there are unread characters remaining
+    if (stream.fail() || stream.peek() != std::char_traits<char>::eof()) {
+        throw std::invalid_argument(errorMessage);
+    }
+}
 
 uint64_t parseTimeStampString(std::string_view timeStampString) {
     // TODO: Find a way to do this without copying the whole string
     std::istringstream ss{std::string(timeStampString)};
     std::chrono::nanoseconds ts;
-    ss >> std::chrono::parse("%H:%M:%S", ts); // supports fractional seconds
+    ss >> std::chrono::parse("%H:%M:%S", ts);
+    validateParsedField(ss, "Invalid time stamp");
     return static_cast<uint64_t>(ts.count());
 }
 
@@ -63,18 +48,22 @@ int64_t parsePriceString(std::string_view priceString) {
     std::istringstream ss{std::string(priceString)};
     double price;
     ss >> price;
+    validateParsedField(ss, "Invalid price input");
     return static_cast<int64_t>(PRICE_MULTIPLIER * price);
 }
 
-uint64_t parseQuantityString(std::string_view quantityString) {
+uint32_t parseQuantityString(std::string_view quantityString) {
     std::istringstream ss{std::string(quantityString)};
-    uint64_t quantity;
+    uint32_t quantity;
     ss >> quantity;
+
+    validateParsedField(ss, "Invalid bid/trade quantity");
+
     return quantity;
 }
 
-Quote parseQuoteString(std::string& quoteString) {
-    CSVStringIterator csvStringIterator{quoteString};
+Quote parseQuoteString(std::string_view quoteString) {
+    CsvFieldCursor csvStringIterator{quoteString};
 
     // Extract timestamp
     std::string_view timeStampString = csvStringIterator.next();
@@ -90,7 +79,7 @@ Quote parseQuoteString(std::string& quoteString) {
 
     // Extract BidQty
     std::string_view quantityString = csvStringIterator.next();
-    uint64_t bid_qty = parseQuantityString(quantityString);
+    uint32_t bid_qty = parseQuantityString(quantityString);
 
     // Extract AskPrice
     priceString = csvStringIterator.next();
@@ -98,75 +87,82 @@ Quote parseQuoteString(std::string& quoteString) {
 
     // Extract AskQty
     quantityString = csvStringIterator.next();
-    uint64_t ask_qty = parseQuantityString(quantityString);
+    uint32_t ask_qty = parseQuantityString(quantityString);
 
     return Quote{symbol, ts_ns, bid_qty, bid_px, ask_qty, ask_px};
 }
 
-Trade parseTradeString(std::string& tradeString) {
-    CSVStringIterator csvStringIterator{tradeString};
+Trade parseTradeString(std::string_view tradeString) {
+    CsvFieldCursor csvFieldCursor{tradeString};
 
     // Extract timestamp
-    std::string_view timeStampString = csvStringIterator.next();
+    std::string_view timeStampString = csvFieldCursor.next();
     uint64_t ts_ns = parseTimeStampString(timeStampString);
 
-    csvStringIterator.next(); // Skip type
+    csvFieldCursor.next(); // Skip type
 
     // Extract symbol
-    std::string symbol = static_cast<std::string>(csvStringIterator.next());
+    std::string symbol = static_cast<std::string>(csvFieldCursor.next());
 
-    csvStringIterator.next(); // Skip bid price
-    csvStringIterator.next(); // Skip bid qty
-    csvStringIterator.next(); // Skip ask price
-    csvStringIterator.next(); // Skip ask qty
+    csvFieldCursor.next(); // Skip bid price
+    csvFieldCursor.next(); // Skip bid qty
+    csvFieldCursor.next(); // Skip ask price
+    csvFieldCursor.next(); // Skip ask qty
 
     // Extract price
-    std::string_view priceString = csvStringIterator.next();
+    std::string_view priceString = csvFieldCursor.next();
     int64_t px = parsePriceString(priceString);
 
     // Extract qty
-    std::string_view quantityString = csvStringIterator.next();
-    uint64_t qty = parseQuantityString(quantityString);
+    std::string_view quantityString = csvFieldCursor.next();
+    uint32_t qty = parseQuantityString(quantityString);
 
     // Extract aggressor
-    std::string_view aggressorStringView = csvStringIterator.next();
+    std::string_view aggressorStringView = csvFieldCursor.next();
 
     return Trade{symbol, ts_ns, qty, px, static_cast<std::string>(aggressorStringView)};
 }
 
-int main() {
-    std::ifstream fileStream(CSV_PATH);
-    if (!fileStream.is_open()) {
+std::variant<Quote, Trade> parseCSVRow(std::string_view line) {
+        // Is the current line a quote or a trade?
+        CsvFieldCursor csvFieldCursor{line};
+        csvFieldCursor.next(); // skip the timestamp
+
+        std::string_view tradeTypeString = csvFieldCursor.next();
+        if (tradeTypeString == "Q") {
+            return parseQuoteString(line);
+        }
+        else if (tradeTypeString == "T") {
+            return parseTradeString(line);
+        }
+        else {
+            throw std::runtime_error("Invalid trade type");
+        }
+}
+
+CsvReader::CsvReader() {
+    // Open the quotes and trades .csv
+    fileStream_ = std::ifstream(CSV_PATH);
+    if (!fileStream_.is_open()) {
         throw std::runtime_error("Cannot open data CSV file");
     }
 
     // Discard the header
     for (int i = 0; i < NUM_LINES_CSV_HEADER; i++) {
         // Ignore characters on the current line until we reach a \n (which is also discarded)
-        fileStream.ignore(
+        fileStream_.ignore(
             std::numeric_limits<std::streamsize>::max(), '\n'
         );
     }
+}
 
-    std::string currentLine;
-    while (std::getline(fileStream, currentLine)) {
-        /*
-         * Read characters from fileStream until we encounter \n (newline) or EOF.
-         * Advance the stream's current position to the beginning of the next line.
-         */
-        // Is the current line a quote or a trade?
-        CSVStringIterator csvStringIterator{currentLine};
-        csvStringIterator.next(); // skip the timestamp
-        std::string_view tradeTypeString = csvStringIterator.next();
-
-        if (tradeTypeString == "Q") {
-            Quote quote = parseQuoteString(currentLine);
-        }
-        else if (tradeTypeString == "T") {
-            Trade trade = parseTradeString(currentLine);
-        }
-        else {
-            throw std::runtime_error("Invalid trade type");
-        }
+std::optional<std::variant<Quote, Trade>> CsvReader::readNextRecord() {
+    std::string line;
+    if (std::getline(fileStream_, line)) {
+        return parseCSVRow(line);
     }
+    if (fileStream_.eof() && !fileStream_.bad()) {
+        return std::nullopt;
+    }
+    throw std::runtime_error("Failed to read CSV row");
 }
